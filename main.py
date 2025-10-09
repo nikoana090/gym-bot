@@ -1,0 +1,339 @@
+import asyncio, datetime as dt, csv, os
+from aiogram import Bot, Dispatcher
+from aiogram.filters import Command
+from aiogram.types import (
+    Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, FSInputFile
+)
+import aiosqlite
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+# ⚙️ Настройки
+BOT_TOKEN = raise RuntimeError("BOT_TOKEN env var is missing")
+DB = "gym.db"
+YOUR_CHAT_ID = 697175842  # ← ВСТАВЬ сюда свой chat_id из @userinfobot (число)
+
+# ---------------- СХЕМА БД ----------------
+CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS members(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT UNIQUE,
+  trainings_total INTEGER DEFAULT 12,
+  remaining INTEGER DEFAULT 12,
+  last_visit_at TEXT,
+  vacation INTEGER DEFAULT 0  -- 0/1
+);
+CREATE TABLE IF NOT EXISTS visits(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  member_id INTEGER,
+  dt TEXT,
+  status TEXT  -- 'came' | 'missed'
+);
+"""
+
+bot = Bot(BOT_TOKEN)
+dp = Dispatcher()
+
+async def ensure_db():
+    async with aiosqlite.connect(DB) as db:
+        await db.executescript(CREATE_SQL)
+        # мягкие миграции на случай старой базы
+        try:
+            await db.execute("ALTER TABLE members ADD COLUMN trainings_total INTEGER")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE members ADD COLUMN vacation INTEGER DEFAULT 0")
+        except Exception:
+            pass
+        try:
+            await db.execute("UPDATE members SET trainings_total = pack_size WHERE trainings_total IS NULL")
+        except Exception:
+            pass
+        await db.commit()
+
+# ---------------- ХЕЛПЕРЫ ----------------
+async def get_all_members(db):
+    async with db.execute(
+        "SELECT id, name, remaining, trainings_total, vacation FROM members ORDER BY name"
+    ) as c:
+        return await c.fetchall()
+
+async def get_member_by_id(db, member_id: int):
+    async with db.execute(
+        "SELECT id, name, remaining, trainings_total, vacation FROM members WHERE id=?", (member_id,)
+    ) as c:
+        return await c.fetchone()
+
+async def change_visit(db, member_id: int, came: bool):
+    """Записать посещение; если пришёл и не отпуск — списать 1 тренировку."""
+    now = dt.datetime.utcnow().isoformat()
+    row = await get_member_by_id(db, member_id)
+    if not row:
+        return None
+    _id, _name, remaining, total, vacation = row
+
+    status = "came" if came else "missed"
+    await db.execute("INSERT INTO visits(member_id, dt, status) VALUES(?,?,?)", (member_id, now, status))
+
+    if came and not vacation:
+        new_remaining = max(remaining - 1, 0)
+        await db.execute(
+            "UPDATE members SET remaining=?, last_visit_at=? WHERE id=?",
+            (new_remaining, now, member_id),
+        )
+
+    await db.commit()
+    return True
+
+async def undo_last(db, member_id: int):
+    """Отменить последнюю отметку (и вернуть 1 тренировку, если списывали)."""
+    async with db.execute(
+        "SELECT id, status FROM visits WHERE member_id=? ORDER BY id DESC LIMIT 1", (member_id,)
+    ) as c:
+        last = await c.fetchone()
+    if not last:
+        return None, "Нет записей для отмены."
+    visit_id, status = last
+
+    _id, name, remaining, total, vacation = await get_member_by_id(db, member_id)
+
+    # Если отменяем "пришёл" — вернём 1 тренировку (не превышая total)
+    if status == "came":
+        new_remaining = min(remaining + 1, total)
+        await db.execute("UPDATE members SET remaining=? WHERE id=?", (new_remaining, member_id))
+
+    await db.execute("DELETE FROM visits WHERE id=?", (visit_id,))
+    await db.commit()
+    return name, None
+
+async def renew_trainings(db, member_id: int, new_total=None):
+    row = await get_member_by_id(db, member_id)
+    if not row:
+        return None
+    _id, _name, _rem, total, _vac = row
+    trainings = new_total if new_total is not None else total
+    await db.execute(
+        "UPDATE members SET trainings_total=?, remaining=? WHERE id=?",
+        (trainings, trainings, member_id),
+    )
+    await db.commit()
+    return trainings
+
+# --- клавиатуры ---
+def members_keyboard(members):
+    # вертикальный список имён (видно полностью)
+    rows = [[InlineKeyboardButton(text=name, callback_data=f"member_{member_id}")]
+            for member_id, name, rem, total, vac in members]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def actions_keyboard(member_id: int, vacation: int):
+    vac_mark = "🏖 выключить" if vacation else "🏖 отпуск"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ пришёл", callback_data=f"act_came_{member_id}")],
+        [InlineKeyboardButton(text="❌ не был", callback_data=f"act_miss_{member_id}")],
+        [InlineKeyboardButton(text="💰 продлить", callback_data=f"act_renew_{member_id}")],
+        [InlineKeyboardButton(text="🔄 отменить последнее", callback_data=f"act_undo_{member_id}")],
+        [InlineKeyboardButton(text=vac_mark, callback_data=f"act_vac_{member_id}")],
+        [InlineKeyboardButton(text="⬅️ назад ко всем", callback_data="back_to_list")]
+    ])
+
+# ---------------- КОМАНДЫ ----------------
+@dp.message(Command("start"))
+async def start(m: Message):
+    await ensure_db()
+    await m.answer(
+        "Привет! Я отмечаю посещения и тренировки 💪\n\n"
+        "Команды:\n"
+        "/add Имя [кол-во тренировок]\n"
+        "/visit — отметить посещение (кнопки)\n"
+        "/status Имя — остаток\n"
+        "/list — список всех\n"
+        "/renew Имя [кол-во] — продлить тренировки\n"
+        "/export — выгрузить журнал посещений"
+    )
+
+@dp.message(Command("add"))
+async def add(m: Message):
+    parts = m.text.split()
+    if len(parts) < 2:
+        return await m.answer("Формат: /add Имя [кол-во тренировок]. Пример: /add Иван 12")
+    name = parts[1]
+    trainings = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 12
+    await ensure_db()
+    async with aiosqlite.connect(DB) as db:
+        try:
+            await db.execute(
+                "INSERT INTO members(name, trainings_total, remaining) VALUES(?,?,?)",
+                (name, trainings, trainings),
+            )
+            await db.commit()
+            await m.answer(f"Добавлен {name}, {trainings} тренировок.")
+        except Exception:
+            await m.answer(f"{name} уже есть в списке.")
+
+@dp.message(Command("visit"))
+async def visit(m: Message):
+    await ensure_db()
+    async with aiosqlite.connect(DB) as db:
+        members = await get_all_members(db)
+    if not members:
+        return await m.answer("Пока нет учеников. Добавьте: /add Имя 12")
+    await m.answer("Кого отмечаем сегодня?", reply_markup=members_keyboard(members))
+
+@dp.callback_query(lambda c: c.data.startswith(("member_", "act_", "back_to_list")))
+async def handle_member_and_actions(cb: CallbackQuery):
+    await ensure_db()
+    async with aiosqlite.connect(DB) as db:
+        # Вернуться к списку
+        if cb.data == "back_to_list":
+            members = await get_all_members(db)
+            return await cb.message.edit_text("Кого отмечаем сегодня?", reply_markup=members_keyboard(members))
+
+        # Открыли подменю по ученику
+        if cb.data.startswith("member_"):
+            member_id = int(cb.data.split("_", 1)[1])
+            row = await get_member_by_id(db, member_id)
+            if not row:
+                return await cb.answer("Не нашёл ученика", show_alert=True)
+            _id, name, rem, total, vac = row
+            text = f"Выбран: {name} — {rem}/{total} тренировок" + (" 🏖" if vac else "")
+            return await cb.message.edit_text(text, reply_markup=actions_keyboard(member_id, vac))
+
+        # Действия из подменю
+        if cb.data.startswith("act_"):
+            _, action, member_id_s = cb.data.split("_", 2)
+            member_id = int(member_id_s)
+
+            row = await get_member_by_id(db, member_id)
+            if not row:
+                return await cb.answer("Не нашёл ученика", show_alert=True)
+            _id, name, rem, total, vac = row
+
+            if action in ("came", "miss"):
+                came = action == "came"
+                await change_visit(db, member_id, came)
+                _id, name, rem, total, vac = await get_member_by_id(db, member_id)
+                msg = f"{'✅ Пришёл' if came else '❌ Не был'}: {name}. Осталось {rem}/{total}"
+                if came and not vac and rem in (2, 1):
+                    msg += f"\n⚠️ Осталось {rem} {'тренировка' if rem==1 else 'тренировки'}!"
+                if came and not vac and rem == 0:
+                    msg += "\n⛔ Тренировки закончились!"
+                if vac:
+                    msg += "\n🏖 В отпуске - тренировки не списаны."
+                await cb.message.answer(msg)
+
+            elif action == "renew":
+                await renew_trainings(db, member_id, None)
+                _id, name, rem, total, vac = await get_member_by_id(db, member_id)
+                await cb.message.answer(f"💰 Продлены тренировки: {name} — {total} занятий.")
+
+            elif action == "undo":
+                name2, err = await undo_last(db, member_id)
+                if err:
+                    await cb.message.answer(f"🔄 {err}")
+                else:
+                    _id, _nm, rem, total, vac = await get_member_by_id(db, member_id)
+                    await cb.message.answer(f"🔄 Отмена: {name2}. Текущий остаток {rem}/{total}.")
+
+            elif action == "vac":
+                new_vac = 0 if vac else 1
+                await db.execute("UPDATE members SET vacation=? WHERE id=?", (new_vac, member_id))
+                await db.commit()
+                await cb.message.answer(f"🏖 Отпуск для {name}: {'включён' if new_vac else 'выключен'}.")
+
+            # После действия остаёмся в подменю выбранного ученика
+            _id, name, rem, total, vac = await get_member_by_id(db, member_id)
+            text = f"Выбран: {name} — {rem}/{total} тренировок" + (" 🏖" if vac else "")
+            await cb.message.edit_text(text, reply_markup=actions_keyboard(member_id, vac))
+
+    await cb.answer()
+
+@dp.message(Command("renew"))
+async def cmd_renew(m: Message):
+    parts = m.text.split()
+    if len(parts) < 2:
+        return await m.answer("Формат: /renew Имя [кол-во тренировок]")
+    name = parts[1]
+    trainings = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else None
+    await ensure_db()
+    async with aiosqlite.connect(DB) as db:
+        async with db.execute("SELECT id FROM members WHERE name=?", (name,)) as c:
+            row = await c.fetchone()
+        if not row:
+            return await m.answer("Такого ученика нет. /add Имя [кол-во]")
+        member_id = row[0]
+        new_total = await renew_trainings(db, member_id, trainings)
+        await m.answer(f"🔁 Продлены тренировки: {name} — {new_total} занятий.")
+
+@dp.message(Command("status"))
+async def status(m: Message):
+    parts = m.text.split(maxsplit=1)
+    if len(parts) < 2:
+        return await m.answer("Формат: /status Имя")
+    name = parts[1]
+    await ensure_db()
+    async with aiosqlite.connect(DB) as db:
+        async with db.execute(
+            "SELECT remaining, trainings_total, vacation FROM members WHERE name=?", (name,)
+        ) as c:
+            row = await c.fetchone()
+    if not row:
+        return await m.answer("Ученика не нашёл. /add Имя 12")
+    remaining, total, vacation = row
+    vac = " (🏖 отпуск)" if vacation else ""
+    await m.answer(f"{name}: осталось {remaining} из {total} тренировок{vac}")
+
+@dp.message(Command("list"))
+async def cmd_list(m: Message):
+    await ensure_db()
+    async with aiosqlite.connect(DB) as db:
+        members = await get_all_members(db)
+    if not members:
+        return await m.answer("Список пуст. /add Имя 12")
+    def line(name, rem, total, vac):
+        tail = " 🏖" if vac else ""
+        return f"{name} — {rem}/{total}{tail}"
+    lines = [line(name, rem, total, vac) for _id, name, rem, total, vac in members]
+    await m.answer("Список учеников:\n" + "\n".join(lines))
+
+@dp.message(Command("export"))
+async def cmd_export(m: Message):
+    await ensure_db()
+    async with aiosqlite.connect(DB) as db:
+        async with db.execute("""
+            SELECT members.name, visits.dt, visits.status
+            FROM visits
+            JOIN members ON members.id = visits.member_id
+            ORDER BY visits.dt DESC
+        """) as c:
+            rows = await c.fetchall()
+    path = "visits.csv"
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f, delimiter=";")
+        writer.writerow(["Имя", "Дата (UTC)", "Статус"])
+        for name, dt_iso, status in rows:
+            writer.writerow([name, dt_iso, "пришёл" if status=="came" else "не был"])
+    await m.answer_document(FSInputFile(path), caption="Экспорт журнала посещений")
+
+# ---------------- УТРОМ (ПН/СР/ПТ 07:00) ----------------
+async def morning_reminder():
+    await ensure_db()
+    async with aiosqlite.connect(DB) as db:
+        members = await get_all_members(db)
+    if not members:
+        return
+    text = "🕖 Доброе утро!\nПора отметить посещения 💪"
+    kb = members_keyboard(members)
+    await bot.send_message(YOUR_CHAT_ID, text, reply_markup=kb)
+
+# ---------------- ЗАПУСК ----------------
+async def main():
+    await ensure_db()
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(morning_reminder, CronTrigger(day_of_week="mon,wed,fri", hour=7, minute=0))
+    scheduler.start()
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
