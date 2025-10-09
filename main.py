@@ -5,15 +5,14 @@ from aiogram.types import (
     Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, FSInputFile
 )
 import aiosqlite
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
 
-# ⚙️ Настройки
-BOT_TOKEN = raise RuntimeError("BOT_TOKEN env var is missing")
+# ---------- НАСТРОЙКИ ----------
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN env var is missing")
 DB = "gym.db"
-YOUR_CHAT_ID = 697175842  # ← ВСТАВЬ сюда свой chat_id из @userinfobot (число)
 
-# ---------------- СХЕМА БД ----------------
+# ---------- СХЕМА БД ----------
 CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS members(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,7 +51,7 @@ async def ensure_db():
             pass
         await db.commit()
 
-# ---------------- ХЕЛПЕРЫ ----------------
+# ---------- ХЕЛПЕРЫ ----------
 async def get_all_members(db):
     async with db.execute(
         "SELECT id, name, remaining, trainings_total, vacation FROM members ORDER BY name"
@@ -66,7 +65,7 @@ async def get_member_by_id(db, member_id: int):
         return await c.fetchone()
 
 async def change_visit(db, member_id: int, came: bool):
-    """Записать посещение; если пришёл и не отпуск — списать 1 тренировку."""
+    """Записать посещение; если пришёл и не в отпуске — списать 1 тренировку."""
     now = dt.datetime.utcnow().isoformat()
     row = await get_member_by_id(db, member_id)
     if not row:
@@ -98,7 +97,6 @@ async def undo_last(db, member_id: int):
 
     _id, name, remaining, total, vacation = await get_member_by_id(db, member_id)
 
-    # Если отменяем "пришёл" — вернём 1 тренировку (не превышая total)
     if status == "came":
         new_remaining = min(remaining + 1, total)
         await db.execute("UPDATE members SET remaining=? WHERE id=?", (new_remaining, member_id))
@@ -108,6 +106,7 @@ async def undo_last(db, member_id: int):
     return name, None
 
 async def renew_trainings(db, member_id: int, new_total=None):
+    """Продлить пакет: если new_total не передан — заново выставить текущий total."""
     row = await get_member_by_id(db, member_id)
     if not row:
         return None
@@ -120,9 +119,9 @@ async def renew_trainings(db, member_id: int, new_total=None):
     await db.commit()
     return trainings
 
-# --- клавиатуры ---
+# ---------- КЛАВИАТУРЫ ----------
 def members_keyboard(members):
-    # вертикальный список имён (видно полностью)
+    # вертикальный список имён (всё видно)
     rows = [[InlineKeyboardButton(text=name, callback_data=f"member_{member_id}")]
             for member_id, name, rem, total, vac in members]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -130,15 +129,15 @@ def members_keyboard(members):
 def actions_keyboard(member_id: int, vacation: int):
     vac_mark = "🏖 выключить" if vacation else "🏖 отпуск"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ пришёл", callback_data=f"act_came_{member_id}")],
-        [InlineKeyboardButton(text="❌ не был", callback_data=f"act_miss_{member_id}")],
-        [InlineKeyboardButton(text="💰 продлить", callback_data=f"act_renew_{member_id}")],
-        [InlineKeyboardButton(text="🔄 отменить последнее", callback_data=f"act_undo_{member_id}")],
+        [InlineKeyboardButton(text="✅ Посетил(а)", callback_data=f"act_came_{member_id}")],
+        [InlineKeyboardButton(text="❌ Пропустил(а)", callback_data=f"act_miss_{member_id}")],
+        [InlineKeyboardButton(text="💰 Оплата", callback_data=f"act_renew_{member_id}")],
+        [InlineKeyboardButton(text="🔄 Отменить последнее", callback_data=f"act_undo_{member_id}")],
         [InlineKeyboardButton(text=vac_mark, callback_data=f"act_vac_{member_id}")],
         [InlineKeyboardButton(text="⬅️ назад ко всем", callback_data="back_to_list")]
     ])
 
-# ---------------- КОМАНДЫ ----------------
+# ---------- КОМАНДЫ ----------
 @dp.message(Command("start"))
 async def start(m: Message):
     await ensure_db()
@@ -157,7 +156,7 @@ async def start(m: Message):
 async def add(m: Message):
     parts = m.text.split()
     if len(parts) < 2:
-        return await m.answer("Формат: /add Имя [кол-во тренировок]. Пример: /add Иван 12")
+        return await m.answer("Формат: /add Имя [кол-во тренировок]. Пример: /add Роман 12")
     name = parts[1]
     trainings = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 12
     await ensure_db()
@@ -185,7 +184,7 @@ async def visit(m: Message):
 async def handle_member_and_actions(cb: CallbackQuery):
     await ensure_db()
     async with aiosqlite.connect(DB) as db:
-        # Вернуться к списку
+        # Назад к списку
         if cb.data == "back_to_list":
             members = await get_all_members(db)
             return await cb.message.edit_text("Кого отмечаем сегодня?", reply_markup=members_keyboard(members))
@@ -242,7 +241,7 @@ async def handle_member_and_actions(cb: CallbackQuery):
                 await db.commit()
                 await cb.message.answer(f"🏖 Отпуск для {name}: {'включён' if new_vac else 'выключен'}.")
 
-            # После действия остаёмся в подменю выбранного ученика
+            # Остаёмся в подменю выбранного ученика
             _id, name, rem, total, vac = await get_member_by_id(db, member_id)
             text = f"Выбран: {name} — {rem}/{total} тренировок" + (" 🏖" if vac else "")
             await cb.message.edit_text(text, reply_markup=actions_keyboard(member_id, vac))
@@ -313,26 +312,12 @@ async def cmd_export(m: Message):
         writer = csv.writer(f, delimiter=";")
         writer.writerow(["Имя", "Дата (UTC)", "Статус"])
         for name, dt_iso, status in rows:
-            writer.writerow([name, dt_iso, "пришёл" if status=="came" else "не был"])
+            writer.writerow([name, dt_iso, "Посетил(а)" if status=="came" else "Пропустил(а)"])
     await m.answer_document(FSInputFile(path), caption="Экспорт журнала посещений")
 
-# ---------------- УТРОМ (ПН/СР/ПТ 07:00) ----------------
-async def morning_reminder():
-    await ensure_db()
-    async with aiosqlite.connect(DB) as db:
-        members = await get_all_members(db)
-    if not members:
-        return
-    text = "🕖 Доброе утро!\nПора отметить посещения 💪"
-    kb = members_keyboard(members)
-    await bot.send_message(YOUR_CHAT_ID, text, reply_markup=kb)
-
-# ---------------- ЗАПУСК ----------------
+# ---------- ЗАПУСК ----------
 async def main():
     await ensure_db()
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(morning_reminder, CronTrigger(day_of_week="mon,wed,fri", hour=7, minute=0))
-    scheduler.start()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
