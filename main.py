@@ -307,7 +307,45 @@ async def cmd_backup(m: Message):
             
     except Exception as e:
         await m.answer(f"❌ Ошибка: {str(e)}")
-
+@dp.message(Command("restore"))
+async def cmd_restore(m: Message):
+    """Восстановить базу из бэкапа"""
+    if not m.document:
+        return await m.answer(
+            "📤 Для восстановления базы:\n\n"
+            "1. Отправьте мне файл базы (.db)\n"
+            "2. Я заменю текущую базу на вашу\n"
+            "3. Бот перезапустится автоматически\n\n"
+            "⚠️  Все текущие данные будут заменены!"
+        )
+    
+    if not m.document.file_name.endswith('.db'):
+        return await m.answer("❌ Файл должен быть базой данных (.db)")
+    
+    try:
+        await m.answer("🔄 Восстанавливаю базу из бэкапа...")
+        
+        # Скачиваем файл
+        file = await bot.get_file(m.document.file_id)
+        file_path = f"/tmp/restored_{m.document.file_name}"
+        await bot.download_file(file.file_path, file_path)
+        
+        # Заменяем текущую базу
+        shutil.copy2(file_path, DB)
+        
+        await m.answer(
+            "✅ База успешно восстановлена!\n"
+            "🔄 Перезапускаю бота...\n\n"
+            "Через 10 секунд бот будет готов к работе!"
+        )
+        
+        # Перезапуск бота
+        await asyncio.sleep(2)
+        await dp.stop_polling()
+        await main()
+        
+    except Exception as e:
+        await m.answer(f"❌ Ошибка восстановления: {str(e)}")
 # ---------- ОБРАБОТЧИКИ КНОПОК ----------
 @dp.callback_query(lambda c: c.data.startswith(("member_", "act_", "back_to_list")))
 async def handle_member_and_actions(cb: CallbackQuery):
