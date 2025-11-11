@@ -186,7 +186,7 @@ async def cmd_list(m: Message):
     lines = [line(name, rem, total, vac) for _id, name, rem, total, vac in members]
     await m.answer("Список учеников:\n" + "\n".join(lines))
 
-@dp.message(Command("status")))
+@dp.message(Command("status"))
 async def status(m: Message):
     parts = m.text.split(maxsplit=1)
     if len(parts) < 2:
