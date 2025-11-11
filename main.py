@@ -191,23 +191,21 @@ async def start(m: Message):
 @dp.message(Command("backup"))
 async def cmd_backup(m: Message):
     """Создать и отправить бэкап базы"""
-    await m.answer("🔄 Создаю бэкап базы данных...")
-    
-    backup_path = await create_backup()
-    if backup_path and os.path.exists(backup_path):
-        await m.answer_document(
-            FSInputFile(backup_path),
-            caption=f"🔐 Бэкап базы {dt.datetime.now().strftime('%d.%m.%Y %H:%M')}"
-        )
+    try:
+        await m.answer("🔄 Создаю бэкап...")
         
-        # Показываем список доступных бэкапов
-        ensure_backup_dir()
-        backup_files = sorted([f for f in os.listdir(BACKUP_DIR) if f.startswith("gym_backup_")])
-        if backup_files:
-            backup_list = "\n".join(backup_files[-5:])  # Последние 5 бэкапов
-            await m.answer(f"📦 Последние бэкапы:\n{backup_list}")
-    else:
-        await m.answer("❌ Не удалось создать бэкап")
+        # Просто отправляем текущую базу
+        if os.path.exists(DB):
+            await m.answer_document(
+                FSInputFile(DB),
+                caption=f"🔐 Бэкап базы {dt.datetime.now().strftime('%d.%m.%Y %H:%M')}"
+            )
+            await m.answer("✅ Бэкап успешно создан!")
+        else:
+            await m.answer("❌ Файл базы данных не найден")
+            
+    except Exception as e:
+        await m.answer(f"❌ Ошибка: {str(e)}")
 
 @dp.message(Command("add"))
 async def add(m: Message):
