@@ -306,11 +306,6 @@ async def cmd_restore(m: Message):
     except Exception as e:
         await m.answer(f"✗ Ошибка при восстановлении: {str(e)}")
 
-
-# ---------- ВСТАВИТЬ СЮДА 2 НОВЫХ ХЭНДЛЕРА ----------
-
-from aiogram import F
-
 @dp.message(F.document & (F.caption.startswith("/restore")))
 async def restore_with_caption(m: Message):
     try:
@@ -319,7 +314,12 @@ async def restore_with_caption(m: Message):
 
         await m.answer("🔄 Восстанавливаю базу из бэкапа...")
 
-        file_path = f"/tmp/restored_{m.document.file_name}" if os.path.exists("/tmp") else f"restored_{m.document.file_name}"
+        # корректное скачивание файла в aiogram v3
+        file_path = (
+            f"/tmp/restored_{m.document.file_name}"
+            if os.path.exists("/tmp")
+            else f"restored_{m.document.file_name}"
+        )
         await bot.download(m.document, destination=file_path)
 
         shutil.copy2(file_path, DB)
