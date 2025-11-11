@@ -281,24 +281,17 @@ async def cmd_restore(m: Message):
             "3. Бот перезапустится автоматически\n\n"
             "🔴 Все текущие данные будут заменены!"
         )
-    
+
     if not m.document.file_name.endswith('.db'):
         return await m.answer("✗ Файл должен быть базой данных (.db)")
 
     try:
         await m.answer("🔄 Восстанавливаю базу из бэкапа...")
 
-        # Скачиваем файл
-        file = await bot.get_file(m.document.file_id)
-        file_path = f"/tmp/restored_{m.document.file_name}"
-        await bot.download_file(file.file_path, file_path)
+        file_path = f"/tmp/restored_{m.document.file_name}" if os.path.exists("/tmp") else f"restored_{m.document.file_name}"
+        await bot.download(m.document, destination=file_path)
 
-        # Заменяем текущую базу
-        import shutil
         shutil.copy2(file_path, DB)
-
-        # Удаляем временный файл
-        import os
         os.remove(file_path)
 
         await m.answer(
@@ -307,13 +300,54 @@ async def cmd_restore(m: Message):
             "Через 10 секунд бот будет готов к работе!"
         )
 
-        # Перезапуск бота
         import sys
         os.execv(sys.executable, [sys.executable] + sys.argv)
-        
+
     except Exception as e:
         await m.answer(f"✗ Ошибка при восстановлении: {str(e)}")
 
+
+# ---------- ВСТАВИТЬ СЮДА 2 НОВЫХ ХЭНДЛЕРА ----------
+
+from aiogram import F
+
+@dp.message(F.document & (F.caption.startswith("/restore")))
+async def restore_with_caption(m: Message):
+    try:
+        if not m.document.file_name.endswith(".db"):
+            return await m.answer("✗ Файл должен быть базой данных (.db)")
+
+        await m.answer("🔄 Восстанавливаю базу из бэкапа...")
+
+        file_path = f"/tmp/restored_{m.document.file_name}" if os.path.exists("/tmp") else f"restored_{m.document.file_name}"
+        await bot.download(m.document, destination=file_path)
+
+        shutil.copy2(file_path, DB)
+        os.remove(file_path)
+
+        await m.answer(
+            "✅ База успешно восстановлена!\n"
+            "🔄 Перезапускаю бота...\n\n"
+            "Через ~10 секунд бот будет готов к работе."
+        )
+
+        import sys
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    except Exception as e:
+        await m.answer(f"✗ Ошибка при восстановлении: {e}")
+
+
+@dp.message(F.document & ~F.caption)
+async def restore_document_without_caption(m: Message):
+    if not m.document.file_name.endswith(".db"):
+        return await m.answer("✗ Файл должен быть базой данных (.db)")
+    await m.answer(
+        "Я получил файл базы.\n"
+        "Чтобы восстановить его, отправь этот же файл с подписью:\n\n"
+        "`/restore`",
+        parse_mode="Markdown"
+    )
 # ---------- ОБРАБОТЧИКИ КНОПОК ----------
 @dp.callback_query(lambda c: c.data.startswith(("member_", "act_", "back_to_list")))
 async def handle_member_and_actions(cb: CallbackQuery):
