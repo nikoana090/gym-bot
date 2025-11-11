@@ -294,41 +294,47 @@ async def cmd_backup(m: Message):
     """Создать и отправить бэкап базы"""
     try:
         await m.answer("🔄 Создаю бэкап...")
-        
+
         # Просто отправляем текущую базу
         if os.path.exists(DB):
             await m.answer_document(
                 FSInputFile(DB),
-                caption=f"🔐 Бэкап базы {dt.datetime.now().strftime('%d.%m.%Y %H:%M')}"
+                caption=f"🔄 Бэкап базы ({datetime.datetime.now().strftime('%d.%m.%Y %H:%M')})"
             )
             await m.answer("✅ Бэкап успешно создан!")
         else:
-            await m.answer("❌ Файл базы данных не найден")
-            
+            await m.answer("✗ Файл базы данных не найден")
+
     except Exception as e:
-        await m.answer(f"❌ Ошибка: {str(e)}")
+        await m.answer(f"✗ Ошибка: {str(e)}")
+
 @dp.message(Command("restore"))
 async def cmd_restore(m: Message):
     """Восстановить базу из бэкапа"""
     if not m.document:
         return await m.answer(
-            "📤 Для восстановления базы:\n\n"
+            "🔄 Для восстановления базы:\n\n"
             "1. Отправьте мне файл базы (.db)\n"
             "2. Я заменю текущую базу на вашу\n"
             "3. Бот перезапустится автоматически\n\n"
-            "⚠️  Все текущие данные будут заменены!"
+            "🔴 Все текущие данные будут заменены!"
         )
     
     if not m.document.file_name.endswith('.db'):
-        return await m.answer("❌ Файл должен быть базой данных (.db)")
-    
+        return await m.answer("✗ Файл должен быть базой данных (.db)")
+
     try:
         await m.answer("🔄 Восстанавливаю базу из бэкапа...")
-        
+
         # Скачиваем файл
         file = await bot.get_file(m.document.file_id)
         file_path = f"/tmp/restored_{m.document.file_name}"
         await bot.download_file(file.file_path, file_path)
+        
+        # Дальнейший код для замены базы...
+        
+    except Exception as e:
+        await m.answer(f"✗ Ошибка при восстановлении: {str(e)}")
         
         # Заменяем текущую базу
         shutil.copy2(file_path, DB)
