@@ -330,28 +330,27 @@ async def cmd_restore(m: Message):
         file = await bot.get_file(m.document.file_id)
         file_path = f"/tmp/restored_{m.document.file_name}"
         await bot.download_file(file.file_path, file_path)
-        
-        # Дальнейший код для замены базы...
-        
-    except Exception as e:
-        await m.answer(f"✗ Ошибка при восстановлении: {str(e)}")
-        
+
         # Заменяем текущую базу
+        import shutil
         shutil.copy2(file_path, DB)
-        
+
+        # Удаляем временный файл
+        import os
+        os.remove(file_path)
+
         await m.answer(
             "✅ База успешно восстановлена!\n"
             "🔄 Перезапускаю бота...\n\n"
             "Через 10 секунд бот будет готов к работе!"
         )
-        
+
         # Перезапуск бота
-        await asyncio.sleep(2)
-        await dp.stop_polling()
-        await main()
+        import sys
+        os.execv(sys.executable, [sys.executable] + sys.argv)
         
     except Exception as e:
-        await m.answer(f"❌ Ошибка восстановления: {str(e)}")
+        await m.answer(f"✗ Ошибка при восстановлении: {str(e)}")
 # ---------- ОБРАБОТЧИКИ КНОПОК ----------
 @dp.callback_query(lambda c: c.data.startswith(("member_", "act_", "back_to_list")))
 async def handle_member_and_actions(cb: CallbackQuery):
