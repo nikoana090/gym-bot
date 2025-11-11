@@ -12,10 +12,10 @@ if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN env var is missing")
 
 # Персистентный каталог для БД (создай Volume в Railway и примонтируй, напр., в /data)
-DATA_DIR = os.environ.get("DATA_DIR", "/data" if os.path.exists("/data") else ".")
+DATA_DIR = "/data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
-DB = os.path.join(DATA_DIR, "gym.db")
+DB = os.path.join(DATA_DIR, "gym.db")  
 
 # ---------- СХЕМА БД ----------
 CREATE_SQL = """
