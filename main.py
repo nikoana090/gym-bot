@@ -213,7 +213,7 @@ async def handle_member_and_actions(cb: CallbackQuery):
                 came = action == "came"
                 await change_visit(db, member_id, came)
                 _id, name, rem, total, vac = await get_member_by_id(db, member_id)
-                msg = f"{'✅ Пришёл' if came else '❌ Не был'}: {name}. Осталось {rem}/{total}"
+                msg = f"{'✅ Посетил(а)' if came else '❌ Пропустил(а)'}: {name}. Осталось {rem}/{total}"
                 if came and not vac and rem in (2, 1):
                     msg += f"\n⚠️ Осталось {rem} {'тренировка' if rem==1 else 'тренировки'}!"
                 if came and not vac and rem == 0:
