@@ -1,4 +1,4 @@
-import asyncio, datetime as dt, csv, os
+mport asyncio, datetime as dt, csv, os
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import (
@@ -10,7 +10,12 @@ import aiosqlite
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN env var is missing")
-DB = "gym.db"
+
+# Используем персистентную папку Railway
+if os.path.exists('/tmp'):
+    DB = '/tmp/gym.db'  # Эта папка сохраняется между деплоями!
+else:
+    DB = "gym.db"
 
 # ---------- СХЕМА БД ----------
 CREATE_SQL = """
