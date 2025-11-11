@@ -11,11 +11,11 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN env var is missing")
 
-# Используем персистентную папку Railway
-if os.path.exists('/tmp'):
-    DB = '/tmp/gym.db'
-else:
-    DB = "gym.db"
+# Персистентный каталог для БД (создай Volume в Railway и примонтируй, напр., в /data)
+DATA_DIR = os.environ.get("DATA_DIR", "/data" if os.path.exists("/data") else ".")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+DB = os.path.join(DATA_DIR, "gym.db")
 
 # ---------- СХЕМА БД ----------
 CREATE_SQL = """
@@ -133,14 +133,16 @@ async def start(m: Message):
     await m.answer(
         "Привет! Я отмечаю посещения и тренировки 💪\n\n"
         "Команды:\n"
-        "/add Имя [кол-во тренировок]\n"
+        "/add Имя [кол-во]\n"
         "/visit — отметить посещение (кнопки)\n"
         "/status Имя — остаток\n"
         "/list — список всех\n"
         "/renew Имя [кол-во] — продлить тренировки\n"
         "/edit Имя [кол-во] — изменить пакет\n"
-        "/export — выгрузить журнал посещений\n"
-        "/backup — создать бэкап базы данных"
+        "/backup — создать бэкап базы (.db)\n"
+        "/export — выгрузить журнал посещений (CSV)\n"
+        "/dbpath — показать путь к БД\n"
+        "/restore — восстановить базу (пришлите .db с подписью /restore)"
     )
 
 @dp.message(Command("add"))
@@ -184,7 +186,7 @@ async def cmd_list(m: Message):
     lines = [line(name, rem, total, vac) for _id, name, rem, total, vac in members]
     await m.answer("Список учеников:\n" + "\n".join(lines))
 
-@dp.message(Command("status"))
+@dp.message(Command("status")))
 async def status(m: Message):
     parts = m.text.split(maxsplit=1)
     if len(parts) < 2:
@@ -221,34 +223,26 @@ async def cmd_renew(m: Message):
 
 @dp.message(Command("edit"))
 async def cmd_edit(m: Message):
-    """Изменить данные ученика"""
     parts = m.text.split()
     if len(parts) < 2:
         return await m.answer(
-            "Формат: /edit Имя [новое_кол-во_тренировок]\n"
+            "Формат: /edit Имя [новое_кол-во]\n"
             "Примеры:\n"
-            "/edit Роман 20 - изменить пакет на 20 тренировок\n"
+            "/edit Роман 20 - изменить пакет на 20\n"
             "/edit Роман - показать текущие данные"
         )
-    
     name = parts[1]
     new_trainings = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else None
-    
     await ensure_db()
     async with aiosqlite.connect(DB) as db:
-        # Получаем текущие данные ученика
         async with db.execute(
             "SELECT id, name, remaining, trainings_total FROM members WHERE name=?", (name,)
         ) as c:
             row = await c.fetchone()
-        
         if not row:
             return await m.answer(f"❌ Ученик '{name}' не найден")
-        
         member_id, current_name, current_remaining, current_total = row
-        
         if new_trainings is not None:
-            # Обновляем общее количество тренировок
             await db.execute(
                 "UPDATE members SET trainings_total=?, remaining=? WHERE id=?",
                 (new_trainings, new_trainings, member_id)
@@ -256,12 +250,11 @@ async def cmd_edit(m: Message):
             await db.commit()
             await m.answer(
                 f"✅ Обновлено: {name}\n"
-                f"📊 Было: {current_total} тренировок\n"
-                f"📊 Стало: {new_trainings} тренировок\n"
-                f"💫 Остаток обновлен до: {new_trainings}"
+                f"📊 Было: {current_total}\n"
+                f"📊 Стало: {new_trainings}\n"
+                f"💫 Остаток обновлён до: {new_trainings}"
             )
         else:
-            # Показываем текущие данные
             await m.answer(
                 f"📊 {name}:\n"
                 f"• Всего тренировок: {current_total}\n"
@@ -270,86 +263,84 @@ async def cmd_edit(m: Message):
                 f"Чтобы изменить: /edit {name} [новое_число]"
             )
 
+@dp.message(Command("backup"))
+async def cmd_backup(m: Message):
+    await ensure_db()
+    ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_name = f"gym_backup_{ts}.db"
+    backup_path = os.path.join(DATA_DIR, backup_name)
+    shutil.copy2(DB, backup_path)
+    await m.answer_document(FSInputFile(backup_path), caption="📦 Резервная копия базы")
+
+@dp.message(Command("export"))
+async def cmd_export(m: Message):
+    await ensure_db()
+    csv_path = os.path.join(DATA_DIR, f"visits_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+    async with aiosqlite.connect(DB) as db, open(csv_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["member_id", "member_name", "dt", "status", "remaining", "trainings_total", "vacation"])
+        async with db.execute("""
+            SELECT v.member_id, m.name, v.dt, v.status, m.remaining, m.trainings_total, m.vacation
+            FROM visits v
+            LEFT JOIN members m ON m.id = v.member_id
+            ORDER BY v.id
+        """) as c:
+            async for row in c:
+                w.writerow(row)
+    await m.answer_document(FSInputFile(csv_path), caption="📤 Экспорт журнала посещений")
+
+@dp.message(Command("dbpath"))
+async def cmd_dbpath(m: Message):
+    await m.answer(f"DB path: `{DB}`\nDATA_DIR: `{DATA_DIR}`", parse_mode="Markdown")
+
+# --- ВОССТАНОВЛЕНИЕ БД ---
 @dp.message(Command("restore"))
 async def cmd_restore(m: Message):
-    """Восстановить базу из бэкапа"""
+    """Инструкция и восстановление, если файл приложен без подписи."""
     if not m.document:
         return await m.answer(
-            "🔄 Для восстановления базы:\n\n"
-            "1. Отправьте мне файл базы (.db)\n"
-            "2. Я заменю текущую базу на вашу\n"
-            "3. Бот перезапустится автоматически\n\n"
-            "🔴 Все текущие данные будут заменены!"
+            "🔄 Для восстановления базы:\n"
+            "1) Отправь файл .db с подписью `/restore`\n"
+            "2) Я заменю текущую базу и перезапущу бота\n\n"
+            "⚠️ Все текущие данные будут заменены."
         )
-
-    if not m.document.file_name.endswith('.db'):
-        return await m.answer("✗ Файл должен быть базой данных (.db)")
-
-    try:
-        await m.answer("🔄 Восстанавливаю базу из бэкапа...")
-
-        file_path = f"/tmp/restored_{m.document.file_name}" if os.path.exists("/tmp") else f"restored_{m.document.file_name}"
-        await bot.download(m.document, destination=file_path)
-
-        shutil.copy2(file_path, DB)
-        os.remove(file_path)
-
-        await m.answer(
-            "✅ База успешно восстановлена!\n"
-            "🔄 Перезапускаю бота...\n\n"
-            "Через 10 секунд бот будет готов к работе!"
-        )
-
-        import sys
-        os.execv(sys.executable, [sys.executable] + sys.argv)
-
-    except Exception as e:
-        await m.answer(f"✗ Ошибка при восстановлении: {str(e)}")
+    # если прислали как /restore + файл (без подписи к самому документу)
+    if not m.document.file_name.endswith(".db"):
+        return await m.answer("✗ Файл должен быть .db")
+    await _do_restore_from_document(m, m.document.file_name)
 
 @dp.message(F.document & (F.caption.startswith("/restore")))
 async def restore_with_caption(m: Message):
-    try:
-        if not m.document.file_name.endswith(".db"):
-            return await m.answer("✗ Файл должен быть базой данных (.db)")
-
-        await m.answer("🔄 Восстанавливаю базу из бэкапа...")
-
-        # корректное скачивание файла в aiogram v3
-        file_path = (
-            f"/tmp/restored_{m.document.file_name}"
-            if os.path.exists("/tmp")
-            else f"restored_{m.document.file_name}"
-        )
-        await bot.download(m.document, destination=file_path)
-
-        shutil.copy2(file_path, DB)
-        os.remove(file_path)
-
-        await m.answer(
-            "✅ База успешно восстановлена!\n"
-            "🔄 Перезапускаю бота...\n\n"
-            "Через ~10 секунд бот будет готов к работе."
-        )
-
-        import sys
-        os.execv(sys.executable, [sys.executable] + sys.argv)
-
-    except Exception as e:
-        await m.answer(f"✗ Ошибка при восстановлении: {e}")
-
+    """Восстановление, если к файлу приложена подпись /restore."""
+    if not m.document.file_name.endswith(".db"):
+        return await m.answer("✗ Файл должен быть .db")
+    await _do_restore_from_document(m, m.document.file_name)
 
 @dp.message(F.document & ~F.caption)
 async def restore_document_without_caption(m: Message):
     if not m.document.file_name.endswith(".db"):
-        return await m.answer("✗ Файл должен быть базой данных (.db)")
+        return await m.answer("✗ Файл должен быть .db")
     await m.answer(
         "Я получил файл базы.\n"
         "Чтобы восстановить его, отправь этот же файл с подписью:\n\n"
         "`/restore`",
         parse_mode="Markdown"
     )
-# ---------- ОБРАБОТЧИКИ КНОПОК ----------
 
+async def _do_restore_from_document(m: Message, file_name: str):
+    try:
+        await m.answer("🔄 Восстанавливаю базу из бэкапа...")
+        file_path = os.path.join(DATA_DIR, f"restored_{file_name}")
+        await bot.download(m.document, destination=file_path)
+        shutil.copy2(file_path, DB)
+        os.remove(file_path)
+        await m.answer("✅ База восстановлена. Перезапускаю бота…")
+        import sys
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except Exception as e:
+        await m.answer(f"✗ Ошибка при восстановлении: {e}")
+
+# ---------- ОБРАБОТЧИКИ КНОПОК ----------
 @dp.callback_query(
     F.data.startswith("member_") |
     F.data.startswith("act_") |
@@ -362,12 +353,10 @@ async def handle_member_and_actions(cb: CallbackQuery):
             # Назад к списку
             if cb.data == "back_to_list":
                 members = await get_all_members(db)
-                return await cb.message.edit_text(
-                    "Кого отмечаем сегодня?",
-                    reply_markup=members_keyboard(members)
-                )
+                await cb.message.edit_text("Кого отмечаем сегодня?", reply_markup=members_keyboard(members))
+                return await cb.answer()
 
-            # Открыли подменю
+            # Подменю по ученику
             if cb.data.startswith("member_"):
                 member_id = int(cb.data.split("_", 1)[1])
                 row = await get_member_by_id(db, member_id)
@@ -375,7 +364,8 @@ async def handle_member_and_actions(cb: CallbackQuery):
                     return await cb.answer("Не нашёл ученика", show_alert=True)
                 _id, name, rem, total, vac = row
                 text = f"Выбран: {name} — {rem}/{total} тренировок" + (" 🏖" if vac else "")
-                return await cb.message.edit_text(text, reply_markup=actions_keyboard(member_id, vac))
+                await cb.message.edit_text(text, reply_markup=actions_keyboard(member_id, vac))
+                return await cb.answer()
 
             # Действия
             if cb.data.startswith("act_"):
@@ -397,37 +387,37 @@ async def handle_member_and_actions(cb: CallbackQuery):
                     if came and not vac and rem == 0:
                         msg += "\n⛔ Тренировки закончились!"
                     if vac:
-                        msg += "\n🏖 В отпуске - тренировки не списаны."
-                    await cb.message.answer(msg)
+                        msg += "\n🏖 В отпуске — не списано."
+                    await cb.answer(msg, show_alert=True)
 
                 elif action == "renew":
                     await renew_trainings(db, member_id, None)
                     _id, name, rem, total, vac = await get_member_by_id(db, member_id)
-                    await cb.message.answer(f"💰 Продлены тренировки: {name} — {total} занятий.")
+                    await cb.answer(f"💰 Продлены тренировки: {name} — {total} занятий.", show_alert=True)
 
                 elif action == "edit":
-                    await cb.message.answer(
+                    await cb.answer(
                         f"✏️ Редактирование: {name}\n"
-                        f"Текущий пакет: {total} тренировок\n\n"
-                        f"Отправьте команду:\n"
-                        f"/edit {name} [новое_число]"
+                        f"Текущий пакет: {total}\n"
+                        f"Отправь: /edit {name} [новое_число]",
+                        show_alert=True
                     )
 
                 elif action == "undo":
                     name2, err = await undo_last(db, member_id)
                     if err:
-                        await cb.message.answer(f"🔄 {err}")
+                        await cb.answer(f"🔄 {err}", show_alert=True)
                     else:
                         _id, _nm, rem, total, vac = await get_member_by_id(db, member_id)
-                        await cb.message.answer(f"🔄 Отмена: {name2}. Текущий остаток {rem}/{total}.")
+                        await cb.answer(f"🔄 Отмена: {name2}. Остаток {rem}/{total}.", show_alert=True)
 
                 elif action == "vac":
                     new_vac = 0 if vac else 1
                     await db.execute("UPDATE members SET vacation=? WHERE id=?", (new_vac, member_id))
                     await db.commit()
-                    await cb.message.answer(f"🏖 Отпуск для {name}: {'включён' if new_vac else 'выключен'}.")
+                    await cb.answer(f"🏖 Отпуск для {name}: {'включён' если new_vac else 'выключен'}.", show_alert=True)
 
-                # Остаёмся в меню ученика
+                # Обновляем подменю
                 _id, name, rem, total, vac = await get_member_by_id(db, member_id)
                 text = f"Выбран: {name} — {rem}/{total} тренировок" + (" 🏖" if vac else "")
                 try:
@@ -435,11 +425,10 @@ async def handle_member_and_actions(cb: CallbackQuery):
                 except Exception as e:
                     if "message is not modified" not in str(e).lower():
                         raise
+                return await cb.answer()
 
-        await cb.answer()
     except Exception as e:
-        await cb.answer(f"Ошибка: {e}", show_alert=True)
-
+        return await cb.answer(f"Ошибка: {e}", show_alert=True)
 
 # ---------- ЗАПУСК ----------
 async def main():
