@@ -415,7 +415,7 @@ async def handle_member_and_actions(cb: CallbackQuery):
                     new_vac = 0 if vac else 1
                     await db.execute("UPDATE members SET vacation=? WHERE id=?", (new_vac, member_id))
                     await db.commit()
-                    await cb.answer(f"🏖 Отпуск для {name}: {'включён' если new_vac else 'выключен'}.", show_alert=True)
+                    await cb.answer(f"🏖 Отпуск для {name}: {'включён' if new_vac else 'выключен'}.", show_alert=True)
 
                 # Обновляем подменю
                 _id, name, rem, total, vac = await get_member_by_id(db, member_id)
