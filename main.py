@@ -270,44 +270,6 @@ async def cmd_edit(m: Message):
                 f"Чтобы изменить: /edit {name} [новое_число]"
             )
 
-@dp.message(Command("export"))
-async def cmd_export(m: Message):
-    await ensure_db()
-    async with aiosqlite.connect(DB) as db:
-        async with db.execute("""
-            SELECT members.name, visits.dt, visits.status
-            FROM visits
-            JOIN members ON members.id = visits.member_id
-            ORDER BY visits.dt DESC
-        """) as c:
-            rows = await c.fetchall()
-    path = "visits.csv"
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f, delimiter=";")
-        writer.writerow(["Имя", "Дата (UTC)", "Статус"])
-        for name, dt_iso, status in rows:
-            writer.writerow([name, dt_iso, "Посетил(а)" if status=="came" else "Пропустил(а)"])
-    await m.answer_document(FSInputFile(path), caption="Экспорт журнала посещений")
-
-@dp.message(Command("backup"))
-async def cmd_backup(m: Message):
-    """Создать и отправить бэкап базы"""
-    try:
-        await m.answer("🔄 Создаю бэкап...")
-
-        # Просто отправляем текущую базу
-        if os.path.exists(DB):
-            await m.answer_document(
-                FSInputFile(DB),
-                caption=f"🔄 Бэкап базы ({datetime.datetime.now().strftime('%d.%m.%Y %H:%M')})"
-            )
-            await m.answer("✅ Бэкап успешно создан!")
-        else:
-            await m.answer("✗ Файл базы данных не найден")
-
-    except Exception as e:
-        await m.answer(f"✗ Ошибка: {str(e)}")
-
 @dp.message(Command("restore"))
 async def cmd_restore(m: Message):
     """Восстановить базу из бэкапа"""
@@ -351,6 +313,7 @@ async def cmd_restore(m: Message):
         
     except Exception as e:
         await m.answer(f"✗ Ошибка при восстановлении: {str(e)}")
+
 # ---------- ОБРАБОТЧИКИ КНОПОК ----------
 @dp.callback_query(lambda c: c.data.startswith(("member_", "act_", "back_to_list")))
 async def handle_member_and_actions(cb: CallbackQuery):
