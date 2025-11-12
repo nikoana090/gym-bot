@@ -129,7 +129,6 @@ def actions_keyboard(member_id: int, vacation: int):
         [InlineKeyboardButton(text="⬅️ Назад ко всем", callback_data="back_to_list")]
     ])
 # ---------- ГЛАВНОЕ МЕНЮ ----------
-# ---------- ГЛАВНОЕ МЕНЮ ----------
 def main_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
