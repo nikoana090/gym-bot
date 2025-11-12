@@ -129,10 +129,11 @@ def actions_keyboard(member_id: int, vacation: int):
         [InlineKeyboardButton(text="⬅️ Назад ко всем", callback_data="back_to_list")]
     ])
 # ---------- ГЛАВНОЕ МЕНЮ ----------
+# ---------- ГЛАВНОЕ МЕНЮ ----------
 def main_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="➕ Добавить")],
+            [KeyboardButton(text="➕ Добавить подопечного"), KeyboardButton(text="✅ Отметить посещение")],
         ],
         resize_keyboard=True
     )
@@ -401,17 +402,16 @@ class AddStates(StatesGroup):
 
 
 # ---------- ОБРАБОТЧИК КНОПКИ "➕ Добавить" ----------
-@dp.message(F.text == "➕ Добавить")
+@dp.message(F.text == "➕ Добавить подопечного")
 async def add_via_button(m: Message, state: FSMContext):
     await state.set_state(AddStates.waiting_name_and_count)
     await m.answer(
         "Введи: Имя [кол-во тренировок]\n"
         "Примеры:\n"
         "• Роман 12\n"
-        "• Алина   (по умолчанию будет 12)"
+        "• Кристина  (по умолчанию будет 12)"
     )
-
-
+    
 @dp.message(AddStates.waiting_name_and_count)
 async def add_via_button_collect(m: Message, state: FSMContext):
     parts = m.text.split()
@@ -434,7 +434,15 @@ async def add_via_button_collect(m: Message, state: FSMContext):
         await m.answer(f"⚠️ {name} уже есть в списке.")
 
     await state.clear()
-
+# ---------- ОБРАБОТЧИК КНОПКИ "✅ Отметить посещение" ----------
+@dp.message(F.text == "✅ Отметить посещение")
+async def visit_via_button(m: Message):
+    await ensure_db()
+    async with aiosqlite.connect(DB) as db:
+        members = await get_all_members(db)
+    if not members:
+        return await m.answer("Пока нет учеников. Добавьте: ➕ Добавить")
+    await m.answer("Кого отмечаем сегодня?", reply_markup=members_keyboard(members))
 # ---------- ОБРАБОТЧИКИ КНОПОК ----------
 @dp.callback_query(
     F.data.startswith("member_") |
