@@ -5,7 +5,7 @@ from aiogram.types import (
     Message, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, FSInputFile
 )
 import aiosqlite
-
+import calendar as calmod 
 # ---------- НАСТРОЙКИ ----------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -125,6 +125,51 @@ def actions_keyboard(member_id: int, vacation: int):
         [InlineKeyboardButton(text=vac_mark, callback_data=f"act_vac_{member_id}")],
         [InlineKeyboardButton(text="⬅️ Назад ко всем", callback_data="back_to_list")]
     ])
+# ---------- КАЛЕНДАРЬ ----------
+
+RU_MONTHS = [
+    "Январь","Февраль","Март","Апрель","Май","Июнь",
+    "Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"
+]
+
+def make_calendar(year: int = None, month: int = None) -> InlineKeyboardMarkup:
+    """Инлайн-календарь с навигацией"""
+    today = dt.date.today()
+    year = year or today.year
+    month = month or today.month
+
+    kb = []
+
+    # Заголовок месяца
+    title = f"{RU_MONTHS[month-1]} {year}"
+    kb.append([InlineKeyboardButton(text=title, callback_data="calnoop")])
+
+    # Дни недели
+    week = ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"]
+    kb.append([InlineKeyboardButton(text=d, callback_data="calnoop") for d in week])
+
+    # Сетка дней
+    calmod.setfirstweekday(calmod.MONDAY)
+    for wk in calmod.monthcalendar(year, month):
+        row = []
+        for d in wk:
+            if d == 0:
+                row.append(InlineKeyboardButton(text=" ", callback_data="calnoop"))
+            else:
+                date_str = f"{year:04d}-{month:02d}-{d:02d}"
+                row.append(InlineKeyboardButton(text=str(d), callback_data=f"cal:{date_str}"))
+        kb.append(row)
+
+    # Навигация по месяцам
+    prev_month = (dt.date(year, month, 15) - dt.timedelta(days=31)).replace(day=1)
+    next_month = (dt.date(year, month, 15) + dt.timedelta(days=31)).replace(day=1)
+    kb.append([
+        InlineKeyboardButton(text="←", callback_data=f"calnav:{prev_month.year:04d}-{prev_month.month:02d}"),
+        InlineKeyboardButton(text="Сегодня", callback_data="caltoday"),
+        InlineKeyboardButton(text="→", callback_data=f"calnav:{next_month.year:04d}-{next_month.month:02d}")
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
 # ---------- КОМАНДЫ ----------
 @dp.message(Command("start"))
@@ -429,6 +474,37 @@ async def handle_member_and_actions(cb: CallbackQuery):
 
     except Exception as e:
         return await cb.answer(f"Ошибка: {e}", show_alert=True)
+# ---------- ОБРАБОТЧИКИ КАЛЕНДАРЯ ----------
+
+@dp.message(Command("calendar"))
+async def cmd_calendar(m: Message):
+    today = dt.date.today()
+    await m.answer("Выберите дату:", reply_markup=make_calendar(today.year, today.month))
+
+@dp.callback_query(F.data.startswith("calnav:"))
+async def cal_nav(cb: CallbackQuery):
+    _, ym = cb.data.split(":", 1)
+    y, m = ym.split("-")
+    y, m = int(y), int(m)
+    await cb.message.edit_reply_markup(reply_markup=make_calendar(y, m))
+    await cb.answer()
+
+@dp.callback_query(F.data == "caltoday")
+async def cal_today(cb: CallbackQuery):
+    today = dt.date.today()
+    await cb.message.edit_reply_markup(reply_markup=make_calendar(today.year, today.month))
+    await cb.answer("Сегодня")
+
+@dp.callback_query(F.data.startswith("cal:"))
+async def cal_pick(cb: CallbackQuery):
+    _, date_str = cb.data.split(":", 1)
+    await cb.message.answer(f"Вы выбрали дату: {date_str}")
+    await cb.answer()
+
+# ---------- ЗАПУСК ----------
+async def main():
+    await ensure_db()
+    await dp.start_polling(bot)
 
 # ---------- ЗАПУСК ----------
 async def main():
