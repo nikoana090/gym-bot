@@ -123,7 +123,7 @@ def actions_keyboard(member_id: int, vacation: int):
         [InlineKeyboardButton(text="✏️ Изменить пакет", callback_data=f"act_edit_{member_id}")],
         [InlineKeyboardButton(text="🔄 Отменить последнее", callback_data=f"act_undo_{member_id}")],
         [InlineKeyboardButton(text=vac_mark, callback_data=f"act_vac_{member_id}")],
-        [InlineKeyboardButton(text="⬅️ назад ко всем", callback_data="back_to_list")]
+        [InlineKeyboardButton(text="⬅️ Назад ко всем", callback_data="back_to_list")]
     ])
 
 # ---------- КОМАНДЫ ----------
@@ -134,8 +134,8 @@ async def start(m: Message):
         "Привет! Я отмечаю посещения и тренировки 💪\n\n"
         "Команды:\n"
         "/add Имя [кол-во]\n"
-        "/visit — отметить посещение (кнопки)\n"
-        "/status Имя — остаток\n"
+        "/visit — отметить посещение\n"
+        "/status Имя — остаток тренировок\n"
         "/list — список всех\n"
         "/renew Имя [кол-во] — продлить тренировки\n"
         "/edit Имя [кол-во] — изменить пакет\n"
