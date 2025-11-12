@@ -6,6 +6,9 @@ from aiogram.types import (
 )
 import aiosqlite
 import calendar as calmod 
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
 # ---------- НАСТРОЙКИ ----------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -125,7 +128,15 @@ def actions_keyboard(member_id: int, vacation: int):
         [InlineKeyboardButton(text=vac_mark, callback_data=f"act_vac_{member_id}")],
         [InlineKeyboardButton(text="⬅️ Назад ко всем", callback_data="back_to_list")]
     ])
-# ---------- КАЛЕНДАРЬ ----------
+# ---------- ГЛАВНОЕ МЕНЮ ----------
+def main_menu_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➕ Добавить")],
+        ],
+        resize_keyboard=True
+    )
+#---------- КАЛЕНДАРЬ ----------
 
 RU_MONTHS = [
     "Январь","Февраль","Март","Апрель","Май","Июнь",
@@ -187,7 +198,8 @@ async def start(m: Message):
         "/backup — создать бэкап базы (.db)\n"
         "/export — выгрузить журнал посещений (CSV)\n"
         "/dbpath — показать путь к БД\n"
-        "/restore — восстановить базу (пришлите .db с подписью /restore)"
+        "/restore — восстановить базу (пришлите .db с подписью /restore)",
+        reply_markup=main_menu_kb(),
     )
 
 @dp.message(Command("add"))
@@ -384,6 +396,45 @@ async def _do_restore_from_document(m: Message, file_name: str):
         os.execv(sys.executable, [sys.executable] + sys.argv)
     except Exception as e:
         await m.answer(f"✗ Ошибка при восстановлении: {e}")
+# ---------- СОСТОЯНИЯ ----------
+class AddStates(StatesGroup):
+    waiting_name_and_count = State()
+
+
+# ---------- ОБРАБОТЧИК КНОПКИ "➕ Добавить" ----------
+@dp.message(F.text == "➕ Добавить")
+async def add_via_button(m: Message, state: FSMContext):
+    await state.set_state(AddStates.waiting_name_and_count)
+    await m.answer(
+        "Введи: Имя [кол-во тренировок]\n"
+        "Примеры:\n"
+        "• Роман 12\n"
+        "• Алина   (по умолчанию будет 12)"
+    )
+
+
+@dp.message(AddStates.waiting_name_and_count)
+async def add_via_button_collect(m: Message, state: FSMContext):
+    parts = m.text.split()
+    if not parts:
+        return await m.answer("Пусто. Напиши: Имя [кол-во]. Например: Роман 12")
+
+    name = parts[0]
+    trainings = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 12
+
+    await ensure_db()
+    try:
+        async with aiosqlite.connect(DB) as db:
+            await db.execute(
+                "INSERT INTO members(name, trainings_total, remaining) VALUES(?,?,?)",
+                (name, trainings, trainings),
+            )
+            await db.commit()
+        await m.answer(f"✅ Добавлен {name}, {trainings} тренировок.")
+    except Exception:
+        await m.answer(f"⚠️ {name} уже есть в списке.")
+
+    await state.clear()
 
 # ---------- ОБРАБОТЧИКИ КНОПОК ----------
 @dp.callback_query(
@@ -500,11 +551,6 @@ async def cal_pick(cb: CallbackQuery):
     _, date_str = cb.data.split(":", 1)
     await cb.message.answer(f"Вы выбрали дату: {date_str}")
     await cb.answer()
-
-# ---------- ЗАПУСК ----------
-async def main():
-    await ensure_db()
-    await dp.start_polling(bot)
 
 # ---------- ЗАПУСК ----------
 async def main():
